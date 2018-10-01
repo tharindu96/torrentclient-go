@@ -1,20 +1,19 @@
 package torrentclient
 
 import (
-	"log"
 	"testing"
 )
 
 func Test_Main(t *testing.T) {
 
-	client := NewTorrentClient("ok", 6881)
+	_ = NewTorrentClient("torrentclient-go", 6881)
 
-	torrent, err := NewTorrentFromFile("./test1.torrent")
+	_, err := NewTorrentFromFile("./tests/test1.torrent")
 	if err != nil {
 		t.Error(err)
 	}
 
-	log.Println(torrent.Trackers[0].RequestPeers(torrent, client))
+	// log.Println(torrent.Trackers[0].RequestPeers(torrent, client))
 
 	// log.Println(torrent)
 
