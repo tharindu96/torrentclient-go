@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -13,12 +14,14 @@ import (
 
 // Torrent struct
 type Torrent struct {
-	InfoHash    string
+	client      *TorrentClient
+	InfoHash    []byte
 	Name        string
 	Trackers    []*Tracker
 	PieceLength uint
 	Pieces      []*Piece
 	Files       []*File
+	Peers       map[string]*Peer
 }
 
 // File struct
@@ -27,8 +30,8 @@ type File struct {
 	Path   string
 }
 
-// NewTorrentFromFile returns a new Torrent Object
-func NewTorrentFromFile(filepath string) (*Torrent, error) {
+// AddTorrentFromFile returns a new Torrent Object
+func (client *TorrentClient) AddTorrentFromFile(filepath string) (*Torrent, error) {
 	f, err := os.Open(filepath)
 	if err != nil {
 		return nil, err
@@ -44,7 +47,10 @@ func NewTorrentFromFile(filepath string) (*Torrent, error) {
 		return nil, err
 	}
 
-	torrent := &Torrent{}
+	torrent := &Torrent{
+		client: client,
+		Peers:  make(map[string]*Peer),
+	}
 
 	ok, err := parseTorrent(&btordict, torrent)
 
@@ -63,9 +69,30 @@ func (torrent *Torrent) GetSize() uint {
 	return uint(len(torrent.Pieces)) * torrent.PieceLength
 }
 
+// GetClient returns the torrent client object
+func (torrent *Torrent) GetClient() *TorrentClient {
+	return torrent.client
+}
+
+// RequestTrackers requests trackers and update the peer list
+func (torrent *Torrent) RequestTrackers(single bool) {
+	for _, t := range torrent.Trackers {
+		peers, err := t.requestPeers()
+		if err != nil || peers == nil {
+			continue
+		}
+		for _, p := range peers {
+			torrent.Peers[fmt.Sprintf("%s:%d", p.IP, p.Port)] = p
+		}
+		if single {
+			break
+		}
+	}
+}
+
 func parseTorrent(tordict *bencode.BDict, torrent *Torrent) (bool, error) {
 
-	trackers, err := getTrackerList(tordict)
+	trackers, err := getTrackerList(tordict, torrent)
 	if err != nil {
 		return false, err
 	}
@@ -113,7 +140,7 @@ func parseTorrentInfo(infodict *bencode.BDict, torrent *Torrent) (bool, error) {
 	return true, nil
 }
 
-func getTrackerList(tordict *bencode.BDict) ([]*Tracker, error) {
+func getTrackerList(tordict *bencode.BDict, torrent *Torrent) ([]*Tracker, error) {
 	bannouncenode := tordict.Get("announce-list")
 	list := make([]*Tracker, 0)
 	if bannouncenode != nil {
@@ -131,7 +158,7 @@ func getTrackerList(tordict *bencode.BDict) ([]*Tracker, error) {
 				if err != nil {
 					return nil, err
 				}
-				t := NewTracker(string(ts), 0)
+				t := NewTracker(string(ts), 0, torrent)
 				list = append(list, t)
 			}
 		}
@@ -144,22 +171,22 @@ func getTrackerList(tordict *bencode.BDict) ([]*Tracker, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := NewTracker(string(ts), 0)
+	t := NewTracker(string(ts), 0, torrent)
 	if !trackerInTrackerList(t, list) {
 		list = append([]*Tracker{t}, list...)
 	}
 	return list, nil
 }
 
-func getInfoHash(infoDictNode *bencode.BNode) (string, error) {
+func getInfoHash(infoDictNode *bencode.BNode) ([]byte, error) {
 	binfobencode, err := infoDictNode.GetBencode()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	sha1Hash := sha1.New()
 	io.WriteString(sha1Hash, binfobencode)
 	hash := sha1Hash.Sum(nil)
-	return string(hash), nil
+	return hash, nil
 }
 
 func getName(infoDict *bencode.BDict) (string, error) {

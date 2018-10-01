@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	bencode "github.com/tharindu96/bencode-go"
 )
 
 // Tracker structure
 type Tracker struct {
+	torrent     *Torrent
 	URL         string
 	Interval    int
 	trackerType trackerType
@@ -28,10 +30,11 @@ const (
 )
 
 // NewTracker creates a new tracker
-func NewTracker(u string, interval int) *Tracker {
+func NewTracker(u string, interval int, torrent *Torrent) *Tracker {
 	t := &Tracker{
 		URL:      u,
 		Interval: interval,
+		torrent:  torrent,
 	}
 	ul, err := url.Parse(u)
 	if err != nil {
@@ -53,25 +56,27 @@ func NewTracker(u string, interval int) *Tracker {
 	return t
 }
 
-// RequestPeers requests new peers from the tracker
-func (tracker *Tracker) RequestPeers(torrent *Torrent, client *TorrentClient) ([]*Peer, error) {
+func (tracker *Tracker) requestPeers() ([]*Peer, error) {
 	switch tracker.trackerType {
 	case typeHTTP:
-		return tracker.requestHTTPTracker(torrent, client)
+		return tracker.requestHTTPTracker()
 	case typeUDP:
-		return tracker.requestUDPTracker(torrent, client)
+		return tracker.requestUDPTracker()
 	default:
 		return nil, errors.New("unknown tracker type")
 	}
 }
 
-func (tracker *Tracker) requestUDPTracker(torrent *Torrent, client *TorrentClient) ([]*Peer, error) {
+func (tracker *Tracker) requestUDPTracker() ([]*Peer, error) {
 	return nil, nil
 }
 
-func (tracker *Tracker) requestHTTPTracker(torrent *Torrent, client *TorrentClient) ([]*Peer, error) {
+func (tracker *Tracker) requestHTTPTracker() ([]*Peer, error) {
+	torrent := tracker.torrent
+	client := torrent.GetClient()
+
 	vals := url.Values{}
-	vals.Set("info_hash", torrent.InfoHash)
+	vals.Set("info_hash", string(torrent.InfoHash))
 	vals.Set("peer_id", fmt.Sprintf("%20s", client.GetID()))
 	vals.Set("port", fmt.Sprintf("%d", client.GetPort()))
 	vals.Set("uploaded", "0")
@@ -84,7 +89,7 @@ func (tracker *Tracker) requestHTTPTracker(torrent *Torrent, client *TorrentClie
 
 	res, err := http.Get(url)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	bNode, err := bencode.BRead(bufio.NewReader(res.Body))
@@ -118,7 +123,7 @@ func (tracker *Tracker) requestHTTPTracker(torrent *Torrent, client *TorrentClie
 		return nil, errors.New("no peers")
 	}
 
-	peers, err := parsePeers(peersNode)
+	peers, err := tracker.parsePeers(peersNode)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +131,7 @@ func (tracker *Tracker) requestHTTPTracker(torrent *Torrent, client *TorrentClie
 	return peers, nil
 }
 
-func parsePeers(peersNode *bencode.BNode) ([]*Peer, error) {
+func (tracker *Tracker) parsePeers(peersNode *bencode.BNode) ([]*Peer, error) {
 	peers := make([]*Peer, 0)
 	if peersNode.Type == bencode.BencodeString {
 		peersbstring, err := peersNode.GetString()
@@ -139,7 +144,7 @@ func parsePeers(peersNode *bencode.BNode) ([]*Peer, error) {
 		peerCount := len(peersString) / 6
 
 		for i := 0; i < peerCount; i++ {
-			p, err := parseCompactPeer([]byte(peersString[i*6 : (i+1)*6]))
+			p, err := tracker.parseCompactPeer([]byte(peersString[i*6 : (i+1)*6]))
 			if err != nil {
 				return nil, err
 			}
@@ -151,7 +156,7 @@ func parsePeers(peersNode *bencode.BNode) ([]*Peer, error) {
 			return nil, err
 		}
 		for _, pn := range peersList {
-			p, err := parsePeer(pn)
+			p, err := tracker.parsePeer(pn)
 			if err != nil {
 				return nil, err
 			}
@@ -161,7 +166,7 @@ func parsePeers(peersNode *bencode.BNode) ([]*Peer, error) {
 	return peers, nil
 }
 
-func parsePeer(peerNode *bencode.BNode) (*Peer, error) {
+func (tracker *Tracker) parsePeer(peerNode *bencode.BNode) (*Peer, error) {
 	peerDict, err := peerNode.GetDict()
 	if err != nil {
 		return nil, err
@@ -188,32 +193,37 @@ func parsePeer(peerNode *bencode.BNode) (*Peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	peer := NewPeer(id.ToString(), ip.ToString(), uint16(port.ToInt()))
+	peer := &Peer{
+		torrent: tracker.torrent,
+		ID:      id.ToString(),
+		IP:      ip.ToString(),
+		Port:    uint16(port.ToInt()),
+	}
 	return peer, nil
 }
 
-func parseCompactPeer(peerb []byte) (*Peer, error) {
+func (tracker *Tracker) parseCompactPeer(peerb []byte) (*Peer, error) {
 	if len(peerb) != 6 {
 		return nil, errors.New("invalid peer")
 	}
 	ipi := binary.BigEndian.Uint32(peerb[0:4])
 	ports := binary.BigEndian.Uint16(peerb[4:6])
 	ip := intToIP(int(ipi))
-	peer := NewPeer("", ip, ports)
+	peer := &Peer{
+		torrent: tracker.torrent,
+		ID:      "",
+		IP:      ip,
+		Port:    ports,
+	}
 	return peer, nil
 }
 
 func intToIP(ipi int) string {
-	str := ""
-
+	parts := make([]string, 4)
 	for i := 0; i < 4; i++ {
 		p := 0xff & ipi
 		ipi = ipi >> 8
-		str += strconv.FormatInt(int64(p), 10)
-		if i < 3 {
-			str += "."
-		}
+		parts[4-i-1] = strconv.FormatInt(int64(p), 10)
 	}
-
-	return str
+	return strings.Join(parts, ".")
 }

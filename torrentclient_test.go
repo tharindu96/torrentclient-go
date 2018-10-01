@@ -6,11 +6,17 @@ import (
 
 func Test_Main(t *testing.T) {
 
-	_ = NewTorrentClient("torrentclient-go", 6881)
+	client := NewTorrentClient("torrentclient-go", 6881)
 
-	_, err := NewTorrentFromFile("./tests/test1.torrent")
+	torrent, err := client.AddTorrentFromFile("./tests/Clocks.torrent")
 	if err != nil {
 		t.Error(err)
+	}
+
+	torrent.RequestTrackers(true)
+
+	for _, v := range torrent.Peers {
+		v.Connect()
 	}
 
 	// log.Println(torrent.Trackers[0].RequestPeers(torrent, client))
